@@ -1,7 +1,11 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define NTSC_LINES 525
+#ifdef PAL
+#define VIDEO_LINES 625
+#else
+#define VIDEO_LINES 525
+#endif
 
 #define FT_STA_d 0
 #define FT_STB_d 1
@@ -15,9 +19,49 @@
 int main()
 {
 
-	uint8_t CbLookup[NTSC_LINES+1]; //Because we're odd, we have to extend this by one byte.
+	uint8_t CbLookup[VIDEO_LINES+1]; //Because we're odd, we have to extend this by one byte.
 	memset( CbLookup, 0, sizeof(CbLookup) );
 	int x;
+
+#ifdef PAL
+	#define OVERSCAN_TOP 30
+	#define OVERSCAN_BOT 10
+	
+	//Setup the callback table.
+	for( x = 0; x < 2; x++ )
+		CbLookup[x] = FT_STB_d;
+	CbLookup[x++] = FT_SRB_d;
+	for( ; x < 5; x++ )
+		CbLookup[x] = FT_STA_d;
+
+	for( ; x < 5+OVERSCAN_TOP; x++ )
+		CbLookup[x] = FT_B_d;
+	for( ; x < 310-OVERSCAN_BOT; x++ ) // 250
+		CbLookup[x] = FT_LIN_d;
+	for( ; x < 310; x++ )
+		CbLookup[x] = FT_B_d;
+	for( ; x < 312; x++ )
+		CbLookup[x] = FT_STA_d;
+
+	//begin odd field
+	CbLookup[x++] = FT_SRA_d;
+	for( ; x < 315; x++ )
+		CbLookup[x] = FT_STB_d;
+	for( ; x < 317; x++ )
+		CbLookup[x] = FT_STA_d;
+
+	for( ; x < 317+OVERSCAN_TOP; x++ )
+		CbLookup[x] = FT_B_d;
+	for( ; x < 622-OVERSCAN_BOT; x++ )//562
+		CbLookup[x] = FT_LIN_d;
+	for( ; x < 622; x++ )
+		CbLookup[x] = FT_B_d;
+	for( ; x < 624; x++ )
+		CbLookup[x] = FT_STA_d;
+	CbLookup[x++] = FT_CLOSE_d;
+	CbLookup[x++] = FT_CLOSE_d;
+
+#else
 	//Setup the callback table.
 	for( x = 0; x < 3; x++ )
 		CbLookup[x] = FT_STA_d;
@@ -49,10 +93,10 @@ int main()
 		CbLookup[x] = FT_B_d;
 	for( ; x < 519-15; x++ )
 		CbLookup[x] = FT_LIN_d;
-	for( ; x < NTSC_LINES-1; x++ )
+	for( ; x < VIDEO_LINES-1; x++ )
 		CbLookup[x] = FT_B_d;
 	CbLookup[x] = FT_CLOSE_d;
-
+#endif
 
 	FILE * f = fopen( "CbTable.h", "w" );
 	fprintf( f, "#ifndef _CBTABLE_H\n\
@@ -69,17 +113,17 @@ int main()
 #define FT_CLOSE 6\n\
 #define FT_MAX_d 7\n\
 \n\
-#define NTSC_LINES %d\n\
+#define VIDEO_LINES %d\n\
 \n\
 uint8_t CbLookup[%d];\n\
 \n\
-#endif\n\n", NTSC_LINES, (NTSC_LINES+1)/2 );
+#endif\n\n", VIDEO_LINES, (VIDEO_LINES+1)/2 );
 	fclose( f );
 
 	f = fopen( "CbTable.c", "w" );
 	fprintf( f, "#include \"CbTable.h\"\n\n" );
-	fprintf( f, "uint8_t CbLookup[%d] = {", (NTSC_LINES+1)/2 );
-	for( x = 0; x < 263; x++ )
+	fprintf( f, "uint8_t CbLookup[%d] = {", (VIDEO_LINES+1)/2 );
+	for( x = 0; x < (VIDEO_LINES+1)/2; x++ )
 	{
 		if( (x & 0x0f) == 0 )
 		{

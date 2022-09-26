@@ -12,9 +12,9 @@
 #define FT_CLOSE 6
 #define FT_MAX_d 7
 
-#define NTSC_LINES 525
+#define VIDEO_LINES 625
 
-uint8_t CbLookup[263];
+uint8_t CbLookup[313];
 
 #endif
 
