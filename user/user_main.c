@@ -13,6 +13,8 @@
 #include <mdns.h>
 #include "3d.h"
 
+#include "pong_geometry.h"
+
 #define PORT 7777
 
 #define procTaskPrio        0
@@ -20,6 +22,22 @@
 
 static os_timer_t some_timer;
 static struct espconn *pUdpServer;
+
+#define POTI1_PIN 4
+#define POTI2_PIN 5
+int16_t paddlePos[2] = {0,0};
+
+int scorePaddle[2] = {0,0};
+
+#define ADCVAL_TO_Y_POS(ADC) ((ADC)/6.4f)
+int adcIdx = 0;
+
+float ballTotalVel = 2.0f;
+
+float ballPosX = 0;
+float ballPosY = 0;
+float ballVelX = 1;
+float ballVelY = 2;
 
 //Tasks that happen all the time.
 
@@ -52,6 +70,127 @@ uint8_t showallowadvance = 1;
 int framessostate = 0;
 int showtemp = 0;
 
+void ICACHE_FLASH_ATTR Draw3DSegmentTranslate( int16_t * c1, int16_t * c2, int dx, int dy)
+{
+	int16_t sx0, sy0, sx1, sy1;
+	LocalToScreenspace( c1, &sx0, &sy0 );
+	LocalToScreenspace( c2, &sx1, &sy1 );
+	CNFGTackSegment( sx0+dx, sy0+dy, sx1+dx, sy1+dy );
+}
+
+void ICACHE_FLASH_ATTR Draw3DModelTranslate(int16_t *verts, uint16_t *indices, int lenIndices, int dx,int dy){
+	int i;
+	int nrv = lenIndices/sizeof(uint16_t);
+	for( i = 0; i < nrv; i+=2 )
+	{
+		int16_t * c1 = &verts[indices[i]];
+		int16_t * c2 = &verts[indices[i+1]];
+		Draw3DSegmentTranslate( c1, c2, dx,dy );
+	}
+}
+
+void ICACHE_FLASH_ATTR LeftPaddle(int posy){
+	int16_t ftmp[16];
+	memcpy(ftmp, ModelviewMatrix, sizeof(ModelviewMatrix));
+	MakeTranslate(PADDLE_CENTER_X(138),PADDLE_CENTER_Y(0),512, ModelviewMatrix);
+	ModelviewMatrix[0] = PADDLE_X;
+	ModelviewMatrix[5] = PADDLE_Y;
+	ModelviewMatrix[10] = PADDLE_Z;
+	Draw3DModelTranslate(cubeVerts, cubeIndices, sizeof(cubeIndices) ,-64,posy+1);
+	memcpy(ModelviewMatrix, ftmp, sizeof(ModelviewMatrix));
+}
+
+
+void ICACHE_FLASH_ATTR RightPaddle(int posy){
+	int16_t ftmp[16];
+	memcpy(ftmp, ModelviewMatrix, sizeof(ModelviewMatrix));
+	MakeTranslate(PADDLE_CENTER_X(-138),PADDLE_CENTER_Y(0),512, ModelviewMatrix);
+	ModelviewMatrix[0] = PADDLE_X;
+	ModelviewMatrix[5] = PADDLE_Y;
+	ModelviewMatrix[10] = PADDLE_Z;
+	Draw3DModelTranslate(cubeVerts, cubeIndices, sizeof(cubeIndices) ,64,posy+1);
+	memcpy(ModelviewMatrix, ftmp, sizeof(ModelviewMatrix));
+}
+
+void ICACHE_FLASH_ATTR Outline(){
+	CNFGColor( 5 );
+	int16_t ftmp[16];
+	memcpy(ftmp, ModelviewMatrix, sizeof(ModelviewMatrix));
+	MakeTranslate(-460,-425,512, ModelviewMatrix);
+	ModelviewMatrix[0] = 920;
+	ModelviewMatrix[5] = 850;
+	ModelviewMatrix[10] = 200;
+	Draw3DModelTranslate(cubeVerts, cubeIndices, sizeof(cubeIndices) ,0,0);
+	memcpy(ModelviewMatrix, ftmp, sizeof(ModelviewMatrix));
+	CNFGColor( 17 );
+}
+
+void ICACHE_FLASH_ATTR Ball(){
+	int16_t ftmp[16];
+	memcpy(ftmp, ModelviewMatrix, sizeof(ModelviewMatrix));
+	tdIdentity( ModelviewMatrix );
+	tdScale(ModelviewMatrix, BALL_X, BALL_Y, BALL_Z);
+	tdRotateEA(ModelviewMatrix, framessostate*3,framessostate*5,2*framessostate);
+	ModelviewMatrix[11] = 768;
+	ModelviewMatrix[3] = BALL_CENTER_X(0);
+	ModelviewMatrix[7] = BALL_CENTER_Y(0);
+	Draw3DModelTranslate(dodecahedronVerts, dodecahedronIndices, sizeof(dodecahedronIndices) ,((int)ballPosX)-5,((int)ballPosY)-5);
+	memcpy(ModelviewMatrix, ftmp, sizeof(ModelviewMatrix));
+}
+
+int calcPaddlePos(uint16_t adcVal){
+	if(adcVal<50)
+		return -70;
+	if(adcVal>450)
+		return 70;
+
+	return ((adcVal-50)/2.9f)-70;
+}
+
+void calcNewBallPos(){
+	ballPosX += ballVelX;
+	ballPosY += ballVelY;
+	if(ballPosY < BALL_Y_POS_MIN || ballPosY > BALL_Y_POS_MAX){
+		ballVelY = -ballVelY;
+	}
+
+	if(ballPosX < BALL_X_POS_PADDLE_MIN){
+		int ballYDelta = (paddlePos[0]-ballPosY);
+		if(ballYDelta <= 0 && ballYDelta >= -PADDLE_RADIUS){
+			ballVelX = -ballVelX;
+			ballVelY = (tdSIN(3*ballYDelta)/256.0f) * ballTotalVel;
+			ballPosX = BALL_X_POS_PADDLE_MIN;
+		} else if(ballYDelta > 0 && ballYDelta < PADDLE_RADIUS){
+			ballVelX = -ballVelX;
+			ballVelY = -(tdSIN(3*ballYDelta)/256.0f) * ballTotalVel;
+			ballPosX = BALL_X_POS_PADDLE_MIN;
+		} 
+	} 
+	if (ballPosX < BALL_X_POS_MIN){
+			ballPosX = 0;
+			ballPosY = 0;
+			scorePaddle[1]+=1;
+	} 
+
+	if (ballPosX > BALL_X_POS_PADDLE_MAX){
+		int ballYDelta = (paddlePos[1]-ballPosY);
+		if(ballYDelta <= 0 && ballYDelta >= -PADDLE_RADIUS){
+			ballVelX = -ballVelX;
+			ballVelY = (tdSIN(3*ballYDelta)/256.0f) * ballTotalVel;
+			ballPosX = BALL_X_POS_PADDLE_MAX;
+		} else if(ballYDelta > 0 && ballYDelta < PADDLE_RADIUS){
+			ballVelX = -ballVelX;
+			ballVelY = -(tdSIN(3*ballYDelta)/256.0f) * ballTotalVel;
+			ballPosX = BALL_X_POS_PADDLE_MAX;
+		}
+	} 
+	if (ballPosX > BALL_X_POS_MAX){
+			ballPosX = 0;
+			ballPosY = 0;
+			scorePaddle[0]+=1;
+	} 
+}
+
 int16_t Height( int x, int y, int l )
 {
 	return tdCOS( (x*x + y*y) + l );
@@ -73,216 +212,28 @@ void ICACHE_FLASH_ATTR DrawFrame(  )
 	tdIdentity( ProjectionMatrix );
 	CNFGColor( 17 );
 
-/*
-
-*/
-
-	switch( showstate )
-	{
-	case 11:  // State that's not in the normal set.  Just displays boxes.
-	{
-		for( i = 0; i < 16; i++ )
-		{
-			int x = i%4;
-			int y = i/4;
-			x *= (FBW/4);
-			y *= (FBH/4);
-			CNFGColor( i );
-			CNFGTackRectangle( x, y, x+(FBW/4)-1, y+(FBH/4)-1);
-		}
-		break;
+	adcIdx = (!adcIdx) & 1;
+	if(adcIdx){
+		gpio_output_set(0, 0, 0, (1 << POTI2_PIN));
+		gpio_output_set(0, (1 << POTI1_PIN), (1 << POTI1_PIN), 0);
+	} else {
+		gpio_output_set(0, 0, 0, (1 << POTI1_PIN));
+		gpio_output_set(0, (1 << POTI2_PIN), (1 << POTI2_PIN), 0);
 	}
-	case 10:
-	{
-		int i;
-		for( i = 0; i < 16; i++ )
-		{
-			CNFGPenX = 14;
-			CNFGPenY = (i+1) * 12;
-			CNFGColor( i );
-			CNFGDrawText( "Hello", 3 );
-			CNFGTackRectangle( 120, (i+1)*12, 180, (i+1)*12+12);
-		}
+	CNFGPenY += 24;
+	CNFGPenX += 80;
 
-		SetupMatrix();
-		tdRotateEA( ProjectionMatrix, -20, 0, 0 );
-		tdRotateEA( ModelviewMatrix, framessostate, 0, 0 );
+	char buf[256];
+	ets_sprintf(buf, "%d:%d", scorePaddle[0], scorePaddle[1]);
+	CNFGDrawText(buf, 4);
 
-		for( y = 3; y >= 0; y-- )
-		for( x = 0; x < 4; x++ )
-		{
-			CNFGColor( x+y*4 );
-			ModelviewMatrix[11] = 1000 + tdSIN( (x + y)*40 + framessostate*2 );
-			ModelviewMatrix[3] = 600*x-850;
-			ModelviewMatrix[7] = 600*y+800 - 850;
-			DrawGeoSphere();
-		}
-
-
-		if( framessostate > 500 ) newstate = 9;
-	}
-		break;
-	case 9:
-	{
-		const char * s = "Direct modulation.\nDMA through the I2S Bus!\nTry it yourself!\n\nhttp://github.com/cnlohr/\nchannel3\n";
-
-		i = ets_strlen( s );
-		if( i > framessostate ) i = framessostate;
-		ets_memcpy( lastct, s, i );
-		lastct[i] = 0;
-		CNFGDrawText( lastct, 3 );
-		if( framessostate > 500 ) newstate = 0;
-		break;
-	}
-	case 8:
-	{
-		int16_t lmatrix[16];
-		CNFGDrawText( "Dynamic 3D Meshes", 3 );
-		SetupMatrix();
-		tdRotateEA( ProjectionMatrix, -20, 0, 0 );
-		tdRotateEA( ModelviewMatrix, 0, 0, framessostate );
-
-		for( y = -18; y < 18; y++ )
-		for( x = -18; x < 18; x++ )
-		{
-			int o = -framessostate*2;
-			int t = Height( x, y, o )* 2 + 2000;
-			CNFGColor( ((t/100)%15) + 1 );
-			int nx = Height( x+1, y, o ) *2 + 2000;
-			int ny = Height( x, y+1, o ) * 2 + 2000;
-			//printf( "%d\n", t );
-			int16_t p0[3] = { x*140, y*140, t };
-			int16_t p1[3] = { (x+1)*140, y*140, nx };
-			int16_t p2[3] = { x*140, (y+1)*140, ny };
-			Draw3DSegment( p0, p1 );
-			Draw3DSegment( p0, p2 );
-		}
-
-		if( framessostate > 400 ) newstate = 10;
-		break;
-	}
-	case 7:
-	{
-		int16_t lmatrix[16];
-		CNFGDrawText( "Matrix-based 3D engine.", 3 );
-		SetupMatrix();
-		tdRotateEA( ProjectionMatrix, -20, 0, 0 );
-
-
-		tdRotateEA( ModelviewMatrix, framessostate, 0, 0 );
-		int sphereset = (framessostate / 120);
-		if( sphereset > 2 ) sphereset = 2;
-		if( framessostate > 400 )
-		{
-			newstate = 8;
-		}
-		for( y = -sphereset; y <= sphereset; y++ )
-		for( x = -sphereset; x <= sphereset; x++ )
-		{
-			if( y == 2 ) continue;
-			ModelviewMatrix[11] = 1000 + tdSIN( (x + y)*40 + framessostate*2 );
-			ModelviewMatrix[3] = 500*x;
-			ModelviewMatrix[7] = 500*y+800;
-			DrawGeoSphere();
-		}
-
-		break;
-	}
-	case 6:
-		CNFGDrawText( "Lines on double-buffered 232x220.", 2 );
-		if( framessostate > 60 )
-		{
-			for( i = 0; i < 350; i++ )
-			{
-				CNFGColor( rand()%16 );
-				CNFGTackSegment( rand()%FBW2, rand()%(FBH-30)+30, rand()%FBW2, rand()%(FBH-30)+30 );
-			}
-		}
-		if( framessostate > 240 )
-		{
-			newstate = 7;
-		}
-		break;
-	case 5:
-		ets_memcpy( frontframe, (uint8_t*)(framessostate*(FBW/8)+0x3FFF8000), ((FBW/4)*FBH) );
-		CNFGColor( 17 );
-		CNFGTackRectangle( 70, 110, 180+200, 150 );		
-		CNFGColor( 16 );
-		if( framessostate > 160 ) newstate = 6;
-	case 4:
-		CNFGPenY += 14*7;
-		CNFGPenX += 60;
-		CNFGDrawText( "38x14 TEXT MODE", 2 );
-
-		CNFGPenY += 14;
-		CNFGPenX -= 5;
-		CNFGDrawText( "...on 232x220 gfx", 2 );
-
-		if( framessostate > 60 && showstate == 4 )
-		{
-			newstate = 5;
-		}
-		break;
-	case 3:
-		for( y = 0; y < 14; y++ )
-		{
-			for( x = 0; x < 38; x++ )
-			{
-				i = x + y + 1;
-				if( i < framessostate && i > framessostate - 60 )
-					lastct[x] = ( i!=10 && i!=9 )?i:' ';
-				else
-					lastct[x] = ' ';
-			}
-			if( y == 7 )
-			{
-				ets_memcpy( lastct + 10, "36x12 TEXT MODE", 15 );
-			}
-			lastct[x] = 0;
-			CNFGDrawText( lastct, 2 );
-			CNFGPenY += 14;
-			if( framessostate > 120 ) newstate = 4;
-		}
-		break;
-	case 2:
-		ctx += ets_sprintf( ctx, "ESP8266 Features:\n 802.11 Stack\n Xtensa Core @80 or 160 MHz\n 64kB IRAM\n 96kB DRAM\n 16 GPIO\n\
- SPI\n UART\n PWM\n ADC\n I2S with DMA\n                                                   \n Analog Broadcast Television\n" );
-		int il = ctx - lastct;
-		if( framessostate/2 < il )
-			lastct[framessostate/2] = 0;
-		else 
-			showtemp++;
-		CNFGDrawText( lastct, 2 );
-		if( showtemp == 60 ) newstate = 3;
-		break;
-	case 1:
-		i = ets_strlen( lastct );
-		lastct[i-framessostate] = 0;
-		if( i-framessostate == 1 ) newstate = 2;
-	case 0:
-	{
-		int stat = wifi_station_get_connect_status();
-
-		CNFGDrawText( lastct, 2 );
-
-		int rssi = wifi_station_get_rssi();
-		uint16 sysadc = system_adc_read();
-		ctx += ets_sprintf( ctx, "Channel 3 Broadcasting.\nframe: %d\nrssi: %d\nadc:  %d\nsstat:%d\n", gframe, rssi,sysadc, stat );
-		struct station_config wcfg;
-		struct ip_info ipi;
-		wifi_get_ip_info(0, &ipi);
-		if( ipi.ip.addr || stat == 255 )
-		{
-			ctx += ets_sprintf( ctx, "IP: %d.%d.%d.%d\n", (ipi.ip.addr>>0)&0xff,(ipi.ip.addr>>8)&0xff,(ipi.ip.addr>>16)&0xff,(ipi.ip.addr>>24)&0xff );
-			ctx += ets_sprintf( ctx, "NM: %d.%d.%d.%d\n", (ipi.netmask.addr>>0)&0xff,(ipi.netmask.addr>>8)&0xff,(ipi.netmask.addr>>16)&0xff,(ipi.netmask.addr>>24)&0xff );
-			ctx += ets_sprintf( ctx, "GW: %d.%d.%d.%d\nESP Online\n", (ipi.gw.addr>>0)&0xff,(ipi.gw.addr>>8)&0xff,(ipi.gw.addr>>16)&0xff,(ipi.gw.addr>>24)&0xff );
-			showtemp++;
-			if( showtemp == 30 ) newstate = 1;
-		}
-		break;
-	}
-
-	}
+	SetupMatrix();
+	paddlePos[adcIdx] = calcPaddlePos(system_adc_read());
+	Outline();
+	LeftPaddle(paddlePos[0]);
+	RightPaddle(paddlePos[1]);
+	calcNewBallPos();
+	Ball();
 
 	if( showstate != newstate && showallowadvance )
 	{

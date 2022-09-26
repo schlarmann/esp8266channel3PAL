@@ -1,8 +1,43 @@
-# channel3
+# ESP8266 channel3 PONG
 
-ESP8266 Analog Broadcast Television Interface
+ESP8266 Analog Broadcast Television Interface: 3D-PONG game.
+Uses no active external components: Connect the potentiometers to digital outputs to allow multiplexing of the single ADC-pin.
+
+## Connections
 
 Hook an antenna up to GPIO3/RX, tune your analog TV to Channel 3.  Power the ESP on!
+
+Wiring diagram for controls:
+```
+ 3v3  ────┐
+          │
+          │
+         ┌┴┐
+         │ │ 10k
+         │ │
+         └┬┘
+          │
+          │
+          │
+          ├───────  A0
+          │
+          │
+   ┌──────┴───┐
+   │          │
+│\─┴┐      │\─┴┐
+│ \ │10k   │ \ │10k
+│ │\│      │ │\│
+│ └┬┘      │ └┬┘
+│  │       │  │
+│          │
+│          │
+│          └──────  D2
+│
+│
+└─────────────────  D1
+```
+
+D1 is the left player and D2 the right.
 
 ## PAL Modification
 To allow for PAL broadcasts, the timings in the video_broadcast-library (formerly ntsc_broadcast) were modified. Since I only wanted to use this with a black an white TV, and PAL colour is actually quite complicated to do digitally, i didn't modify the broadcast_tables (synthtables.c). So the library broadcasts a PAL compliant B/W-Signal with NTSC Colour information (kind of like NTSC50).
